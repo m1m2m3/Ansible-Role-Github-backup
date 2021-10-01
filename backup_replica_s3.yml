@@ -1,0 +1,159 @@
+---
+- hosts: bastion
+  connection: local
+  tasks:
+    - name: Provisiong environment for GitHub backup, restoration and Replica setup
+      terraform:
+         binary_path: '/usr/local/bin/terraform'
+         project_path: "{{ state_file_path }}"
+         state: present
+    - name: Environment Configuration...
+      wait_for:
+         timeout: 180
+    - name: Getting ready with VMs
+      shell:
+         cmd: "cat terraform.tfstate"
+         chdir: "{{ state_file_path }}"
+      register: result
+    - name: Register json result
+      set_fact:
+         json_result_data: "{{ result.stdout | from_json  }}"
+    - name: Getting Primary environment
+      set_fact:
+         aws_private_ip: "{{ json_result_data.resources[3]['instances'][0]['attributes']['private_ip'] }}"  
+    - name: Getting Replica environment
+      set_fact:
+         replica_ip: "{{ json_result_data.resources[3]['instances'][1]['attributes']['private_ip'] }}"
+         
+- name: Getting backup from Prod environment and putting it in AWS S3 bucket
+  hosts: npe_backup
+  tasks:
+  - name: Getting the timestamp of the Github latest backup
+    shell: /usr/local/bin/aws s3 ls s3://{{ bucket_name }}/{{bucket_folder_name}} | sort | tail -n 2 | awk '{print $4}' | cut -s -f1 -d'.'
+    register: archive_file_name
+  - set_fact:
+     file_name: "{{ archive_file_name.stdout }}"
+  
+- name: Getting GitHub backup from Prod S3
+  hosts: npe_backup
+  vars:
+     backup_file_name: "{{ file_name }}"
+  gather_facts: no
+  tasks:
+   - name: Checking the file already exists
+     stat:
+        path: '{{ home_path }}/{{ backup_file_name }}.tar'
+        get_checksum: no
+     ignore_errors: true
+     register: backup_tar_stat
+   
+   - name: Downloading {{ backup_file_name }} from the S3 bucket
+     aws_s3:
+       bucket: "{{ bucket_name }}"
+       object: "{{ bucket_folder_name }}{{ backup_file_name }}.tar"
+       dest: "{{ home_path }}/{{ backup_file_name }}.tar"
+       mode: get
+     when: backup_tar_stat.stat.exists == false
+
+- name: Setting up licence, password and ssh key to the new Github server
+  hosts: npe_backup
+  roles:
+    - role: github_licence
+      aws_private_ip: "{{ hostvars[groups['bastion'][0]]['aws_private_ip'] }}"
+      replica_ip: "{{ hostvars[groups['bastion'][0]]['replica_ip'] }}"
+
+    - role: github_ssh_key
+      aws_private_ip: "{{ hostvars[groups['bastion'][0]]['aws_private_ip'] }}"
+      replica_ip: "{{ hostvars[groups['bastion'][0]]['replica_ip'] }}"
+
+- name: Restoration Backup
+  hosts: npe_backup
+  roles:
+    - role: github_restore
+      aws_private_ip: "{{ hostvars[groups['bastion'][0]]['aws_private_ip'] }}"
+      backup_file_name: "{{ file_name }}"
+
+- hosts: npe_backup
+  tasks:
+  - name: Enabling replica to ssh
+    shell: scp -r -i {{ git_ssh_pub_path }}/{{ scp_key_name }}  {{ git_ssh_pub_path }}/{{ git_ssh_pub_name }}  ec2-user@{{ bastion_ip }}:{{ userpath }}
+
+- hosts: bastion
+  connection: local
+  gather_facts: no
+  vars:
+    replica_host: "{{ hostvars[groups['bastion'][0]]['replica_ip'] }}"
+  tasks:
+  - name: Enabled replica to ssh
+    copy:
+      src: "{{ userpath }}/{{ git_ssh_pub_name }}"
+      dest: "{{ state_file_path }}"
+      owner: "{{ owner-name }}"
+      group: "{{ group-name }}"
+      remote_src: true
+      mode: 0600
+
+  - name: Replica host configuration
+    add_host:
+       hostname: '{{ replica_host }}'
+       group: replica
+       ansible_user: admin
+       ansible_ssh_port: "{{ ssh_port }}"
+       ansible_ssh_private_key_file: "{{ state_file_path }}/{{ git_ssh_pub_name }}"
+       register: result
+
+- name: Start with Replica setup
+  hosts: replica
+  gather_facts: no
+  roles:
+    - role: github_replica
+      replica_ip: "{{ hostvars[groups['bastion'][0]]['replica_ip'] }}"
+      aws_private_ip: "{{ hostvars[groups['bastion'][0]]['aws_private_ip'] }}"
+  tasks:
+   - name: Change hostname 
+     shell: hostnamectl set-hostname github-npe-worldpay-com-replica
+     
+- hosts: bastion
+  connection: local
+  gather_facts: no
+  vars:
+    primary_host: "{{ hostvars[groups['bastion'][0]]['aws_private_ip'] }}"
+  tasks:
+  - name: Enabled replica to ssh
+    copy:
+      src: "{{ userpath }}/{{ git_ssh_pub_name }}"
+      dest: "{{ state_file_path }}"
+      owner: "{{ owner-name }}"
+      group: "{{ group-name }}"
+      remote_src: true
+      mode: 0600
+
+  - name: Primary host configuration
+    add_host:
+       hostname: '{{ primary_host }}'
+       group: primary
+       ansible_user: admin
+       ansible_ssh_port: "{{ ssh_port }}"
+       ansible_ssh_private_key_file: "{{ state_file_path }}/{{ git_ssh_pub_name }}"
+       register: result
+
+- name: Start with Replica setup
+  hosts: primary
+  gather_facts: no  
+  tasks:
+   - name: Change hostname 
+     shell: hostnamectl set-hostname github-npe-worldpay-com-primary     
+
+- hosts: bastion
+  connection: local
+  gather_facts: no
+  tasks:
+   - name: Cleanup
+     file:
+       path: "{{ state_file_path }}/{{ git_ssh_pub_name }}"
+       state: absent
+   - name: Cleanup
+     file:
+       path: "{{ state_file_path }}/terraform.tfstate"
+       state: absent
+      

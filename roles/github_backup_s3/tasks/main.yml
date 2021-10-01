@@ -1,0 +1,19 @@
+---
+# tasks file for roles/github_backup_s3
+---
+- name: AWS S3 managing objects
+  hosts: all
+  gather_facts: yes
+  tasks:
+    - name: Getting the timestamp of the Github latest backup
+      shell: basename $( realpath {{ sourc_file }} )
+      register: archive_file_name
+      
+    - name: Put Object in S3
+      aws_s3:
+        bucket: {{ bucket-name }}
+        object: {{ archive_file_name.stdout }}
+        src: "/home/ec2-user/{{ archive_file_name.stdout }}"
+        mode: put           
+
+

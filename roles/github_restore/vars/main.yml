@@ -1,0 +1,5 @@
+---
+
+home_path: /home/ec2-user
+full_backup_extract_path: /data/backup_for_restoration
+backup_utils_path: /etc/backup-utils

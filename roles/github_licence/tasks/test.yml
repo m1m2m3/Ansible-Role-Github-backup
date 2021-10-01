@@ -1,0 +1,32 @@
+---
+- hosts: localhost
+  vars:
+          scheme: http
+          git_mgmt_port: 8080
+  tasks:
+   - name: test Agent & Server connection
+     shell:
+       cmd: "cat terraform.tfstate"
+       chdir: "/home/adm_namdeva791/terraform/"
+     register: result
+   - name: register json result
+     set_fact:
+       json_result_data: "{{ result.stdout | from_json  }}"
+   - name: register IP
+     set_fact:
+       aws_private_ip: "{{ json_result_data.resources[4]['instances'][0]['attributes']['private_ip'] }}"
+       #   - name: Print IP
+       #     debug: 
+       #       var: aws_private_ip
+       #msg: "Private IP Address is - {{ json_result_data.resources[4]['instances'][0]['attributes']['private_ip'] }}"
+    
+   - name: Check GitHub is a new Install
+     uri:
+       url: "{{ scheme }}://{{ aws_private_ip }}:{{ git_mgmt_port }}/api/v3/enterprise/settings/license"
+       validate_certs: no
+       status_code: 200, 404
+     register: newinstance_check
+     ignore_errors: yes
+   - debug: 
+         var: newinstance_check
+

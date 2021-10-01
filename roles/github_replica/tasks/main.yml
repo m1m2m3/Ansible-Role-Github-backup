@@ -1,0 +1,43 @@
+---
+- name: check replica is not already configured
+  shell: ghe-repl-status
+  register: ghe_repl_status_output
+  ignore_errors: yes
+
+- name: Getting replica setup enable
+  shell: ghe-repl-setup {{ aws_private_ip }} | grep ssh-ed25519
+  register: ghe_repl_setup_output
+  ignore_errors: yes
+  when: 'ghe_repl_status_output.stderr == "Error: Replication is not configured. Please run ''ghe-repl-setup'' first."'
+
+- name: print ssh key
+  debug:
+    var: ghe_repl_setup_output.stdout
+  when: ghe_repl_setup_output.stdout is defined
+
+- name: add ssh key to primary server 
+  command: curl -L -X POST -k '{{ scheme }}://api_key:{{ git_mgmt_password }}@{{ aws_private_ip }}:{{ git_mgmt_port }}/setup/api/settings/authorized-keys' -F authorized_key='{{ ghe_repl_setup_output.stdout }}'
+  connection: local
+  when: ghe_repl_setup_output.stdout is defined
+  ignore_errors: yes
+
+- name: Setup replica
+  shell: ghe-repl-setup {{ aws_private_ip }}
+  register: ghe_repl_setup_p2_output
+  when: ghe_repl_setup_output.stdout is defined
+
+- name: print ssh key
+  debug:
+    var: ghe_repl_setup_p2_output.stdout
+  when: ghe_repl_setup_p2_output.stdout is defined
+
+- name: Check that known host file exists
+  stat:
+    path: /home/admin/.ssh/known_hosts
+  register: stat_result
+  when: ghe_repl_setup_p2_output.stdout is defined
+- name: Start replica setup
+  shell: ghe-repl-start
+  register: ghe_result
+  when: ghe_repl_setup_p2_output.stdout is defined 
+

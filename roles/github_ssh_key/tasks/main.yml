@@ -1,0 +1,46 @@
+---
+# tasks file for github_ssh_key
+- name: Check for existing ssh key and delete if true
+  block:
+
+    - name: Check SSH key already exists in root
+      stat:
+        path: "{{ git_ssh_pub_path }}/{{ git_ssh_pub_name }}"
+      register: stat_result
+
+    - name: Remove SSH keys if they already exist
+      shell: >
+        rm {{ git_ssh_pub_path }}/{{ git_ssh_pub_name }} &&
+        rm {{ git_ssh_pub_path }}/{{ git_ssh_pub_name}}.pub
+      when: stat_result.stat.exists == True
+
+
+# Generate new keys and prepare the key for upload to the server
+    - name: Create new SSH keys
+      shell: >
+        ssh-keygen -t ed25519 -f {{ git_ssh_pub_path }}/{{ git_ssh_pub_name }} -q -N ""
+      args:
+        creates: "{{ git_ssh_pub_path }}/{{ git_ssh_pub_name }}.pub"
+      when: new_ssh_key == True
+
+    - name: Delete SSH Key from Server
+      command: >
+        curl -L -X DELETE -k
+        "{{ scheme }}://api_key:{{ git_mgmt_password }}@{{ aws_private_ip }}:{{ git_mgmt_port }}/setup/api/settings/authorized-keys"
+         -F authorized_key=@{{ git_ssh_pub_path }}/{{ git_ssh_pub_name }}.pub
+      when: new_ssh_key == True
+
+    - name: Add SSH Key to Server
+      command: >
+          curl -L -X POST -k
+          "{{ scheme }}://api_key:{{ git_mgmt_password }}@{{ aws_private_ip }}:{{ git_mgmt_port }}/setup/api/settings/authorized-keys"
+          -F authorized_key=@{{ git_ssh_pub_path }}/{{ git_ssh_pub_name }}.pub
+      register: addresult
+
+    - name: Add SSH Key to Replica Server
+      command: >
+          curl -L -X POST -k
+          "{{ scheme }}://api_key:{{ git_mgmt_password }}@{{ replica_ip }}:{{ git_mgmt_port }}/setup/api/settings/authorized-keys"
+          -F authorized_key=@{{ git_ssh_pub_path }}/{{ git_ssh_pub_name }}.pub
+      register: resultresult  
+

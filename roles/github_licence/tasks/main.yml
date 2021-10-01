@@ -1,0 +1,21 @@
+---
+- name: Check GitHub is a new Install
+  uri:
+    url: "{{ scheme }}://{{ aws_private_ip }}:{{ git_mgmt_port }}/api/v3/enterprise/settings/license"
+    validate_certs: no
+    status_code: 200, 404
+  register: newinstance_check
+  ignore_errors: yes
+
+- name: print querry address
+  set_fact:
+    test_url: "{{ scheme }}://{{ aws_private_ip }}:{{git_mgmt_port}}/setup/start"
+
+
+- name: Setup License and Admin Password
+  command: curl -L -X POST -k '{{ scheme }}://{{ aws_private_ip }}:{{ git_mgmt_port }}/setup/api/start' -F license=@{{ git_licence_path}} -F "password={{ git_mgmt_password }}"
+  when: newinstance_check.url == test_url
+
+- name: Setup License and Admin Password for Replica Server
+  command: curl -L -X POST -k '{{ scheme }}://{{ replica_ip }}:{{ git_mgmt_port }}/setup/api/start' -F license=@{{ git_licence_path }} -F "password={{ git_mgmt_password }}"
+

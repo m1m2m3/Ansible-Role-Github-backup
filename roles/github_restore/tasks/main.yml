@@ -1,0 +1,145 @@
+---
+
+- name: Checking backup tar file is present npe_backup home dir
+  stat:
+          path: '{{ home_path }}/{{ backup_file_name }}.tar'
+          get_checksum: no
+  register: backup_tar_stat
+
+- name: Extracting the tar
+  block:
+          - name: Cleaning the existing old backups from {{ full_backup_extract_path }}
+            file:
+                  path: '{{ full_backup_extract_path }}'
+                  state: absent
+
+          - name: Creating fresh dir {{ full_backup_extract_path }} for extraction
+            command: mkdir {{ full_backup_extract_path }}
+
+          - name: Move the tar
+            command: mv {{ home_path }}/{{ backup_file_name }}.tar {{ full_backup_extract_path }}
+
+          - name: extract the tar
+            shell: cd {{ full_backup_extract_path }} && tar -xf {{ backup_file_name }}.tar
+
+  when: backup_tar_stat.stat.exists
+
+
+- name: check {{ full_backup_extract_path }} dir present
+  stat:
+          path: '{{ full_backup_extract_path }}'
+          get_checksum: no
+  register: full_backup_dir
+
+###################################################
+- name: Extract backup utils
+  unarchive:
+    src: backup-utils.tar.gz
+    dest: /etc
+
+- name: Check Existing Version
+  stat:
+    path: /etc/github-backup-utils/bin/ghe-backup
+    get_checksum: yes
+    checksum_algorithm: md5
+  register: existing_backup_utils
+
+- name: Check Extracted folder exists
+  find:
+    paths: /etc
+    file_type: directory
+    patterns:
+      - github-backup-utils*
+  register: extracted_folder
+
+- name: Check New Version
+  stat:
+    path: /etc/github-backup-utils/bin/ghe-backup
+    get_md5: yes
+  register: new_backup_utils
+
+- name: print stat
+  debug:
+    var: extracted_folder
+
+
+- name: print stat
+  debug:
+    var: new_backup_utils.stat
+
+- name: print stat
+  debug:
+    var: existing_backup_utils.stat
+
+- name: Delete Backup Utilities when check sum is different
+  file:
+    state: absent
+    path: /etc/github-backup-utils
+  when: 
+    - existing_backup_utils.stat.checksum is defined
+    - existing_backup_utils.stat.checksum != new_backup_utils.stat.checksum
+
+- name: Check Folder has been deleted
+  stat:
+    path: /etc/github-backup-utils/bin/ghe-backup
+    get_checksum: yes
+    checksum_algorithm: md5
+  register: existing_backup_utils_post_delete
+
+- name: Rename Folder
+  command: mv {{ extracted_folder.files[0].path }} /etc/github-backup-utils
+  when: 
+    - extracted_folder.matched > 0
+    - existing_backup_utils_post_delete.stat.checksum is not defined
+  ignore_errors: yes
+
+- name: template the backup.config
+  template:
+    src: "backup.config.j2"
+    dest: "/etc/backup-utils/backup.config"
+    mode: 0600
+
+      ##################################################
+
+- name: keyscan
+  shell: "ssh-keyscan -p 122 {{ aws_private_ip }} >> /root/.ssh/known_hosts"
+
+- name: Executing the ghe-restore using github utilities
+  command: "./ghe-restore {{ aws_private_ip }} -s {{ backup_file_name }} -v"
+  args:
+          chdir: "{{ backup_utils_path }}/bin"
+          #stdin_add_newline: yes
+          #stdin: yes
+  when: full_backup_dir.stat.exists and full_backup_dir.stat.isdir
+  environment:
+          GHE_DISABLE_SSH_MUX: 1
+
+- name: Rerun Configure for Settings to Take Effect
+  uri:
+    user: api_key
+    password: "{{ git_mgmt_password }}"
+    force_basic_auth: yes
+    url: "{{ scheme }}://{{ aws_private_ip }}:{{ git_mgmt_port }}/setup/api/configure"
+    follow_redirects: safe
+    method: POST
+    validate_certs: no
+    status_code: [202]
+
+- name: Check Configuration
+  block:
+    - name: Wait before checking configuration
+      wait_for:
+        timeout: 5
+    - name: Check Configuration
+      uri:
+        user: api_key
+        password: "{{ git_mgmt_password }}"
+        force_basic_auth: yes
+        url: "{{ scheme }}://{{ aws_private_ip }}:{{ git_mgmt_port }}/setup/api/configcheck"
+        validate_certs: no
+      register: configcheck
+      ignore_errors: yes
+      failed_when: "configcheck.json.status  == 'failed'"
+      retries: 30
+      delay: 60
+      until: "configcheck.json.status  == 'success' "
